@@ -1,0 +1,8 @@
+plugin:
+  build: .
+  volumes:
+    - /usr/share/docker/plugins/macvlan.sock:/usr/share/docker/plugins/macvlan.sock
+    - /var/run/docker.sock:/var/run/docker.sock
+  net: host
+  privileged: true
+
