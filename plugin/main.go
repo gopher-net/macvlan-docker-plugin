@@ -1,21 +1,25 @@
 package main
 
 import (
+	"fmt"
 	"os"
-	"path/filepath"
 
 	log "github.com/Sirupsen/logrus"
 	"github.com/codegangsta/cli"
 	"github.com/gopher-net/macvlan-docker-plugin/plugin/macvlan"
 )
 
-const version = "0.1"
+const (
+	version       = "0.1"
+	macvlanSocket = "macvlan.sock"
+	pluginPath    = "/run/docker/plugins/"
+)
 
 func main() {
 
 	var flagSocket = cli.StringFlag{
 		Name:  "socket, s",
-		Value: "/usr/share/docker/plugins/macvlan.sock",
+		Value: macvlanSocket,
 		Usage: "listening unix socket",
 	}
 	var flagDebug = cli.BoolFlag{
@@ -33,12 +37,12 @@ func main() {
 		macvlan.FlagGateway,
 		macvlan.FlagBridgeSubnet,
 	}
+	app.Before = initEnv
 	app.Action = Run
-	app.Before = cliInit
 	app.Run(os.Args)
 }
 
-func cliInit(ctx *cli.Context) error {
+func initEnv(ctx *cli.Context) error {
 	socketFile := ctx.String("socket")
 	// Default loglevel is Info
 	if ctx.Bool("debug") {
@@ -47,21 +51,7 @@ func cliInit(ctx *cli.Context) error {
 		log.SetLevel(log.InfoLevel)
 	}
 	log.SetOutput(os.Stderr)
-	// Verify the path to the plugin socket oath and filename were passed
-	sockDir, fileHandle := filepath.Split(socketFile)
-	if fileHandle == "" {
-		log.Fatalf("Socket file path and name are required. Ex. /usr/share/docker/plugins/<plugin_name>.sock")
-	}
-	// Make the plugin filepath and parent dir if it does not already exist
-	if err := os.MkdirAll(sockDir, 0755); err != nil && !os.IsExist(err) {
-		log.Warnf("Could not create net plugin path directory: [ %s ]", err)
-	}
-	// If the plugin socket file already exists, remove it.
-	if _, err := os.Stat(socketFile); err == nil {
-		log.Debugf("socket file [ %s ] already exists, deleting..", socketFile)
-		removeSock(socketFile)
-	}
-	log.Debugf("Plugin socket path is [ %s ] with a file handle [ %s ]", sockDir, fileHandle)
+	initSock(socketFile)
 	return nil
 }
 
@@ -73,14 +63,33 @@ func Run(ctx *cli.Context) {
 		log.Fatalf("unable to create driver: %s", err)
 	}
 	log.Info("Macvlan network driver initialized successfully")
-	if err := d.Listen(ctx.String("socket")); err != nil {
+
+	// concatenate the absolute path to the spec file handle
+	absSocket := fmt.Sprint(pluginPath, ctx.String("socket"))
+	if err := d.Listen(absSocket); err != nil {
 		log.Fatal(err)
 	}
 }
 
-func removeSock(sockFile string) {
-	err := os.Remove(sockFile)
+// removeSock if an old filehandle exists remove it
+func removeSock(absFile string) {
+	err := os.RemoveAll(absFile)
 	if err != nil {
-		log.Fatalf("unable to remove old socket file [ %s ] due to: %s", sockFile, err)
+		log.Fatalf("Unable to remove the old socket file [ %s ] due to: %s", absFile, err)
 	}
+}
+
+// initSock create the plugin filepath if it does not already exist
+func initSock(socketFile string) {
+	if err := os.MkdirAll(pluginPath, 0755); err != nil && !os.IsExist(err) {
+		log.Warnf("Could not create net plugin path directory: [ %s ]", err)
+	}
+	// concatenate the absolute path to the spec file handle
+	absFile := fmt.Sprint(pluginPath, socketFile)
+	// If the plugin socket file already exists, remove it.
+	if _, err := os.Stat(absFile); err == nil {
+		log.Debugf("socket file [ %s ] already exists, unlinking the old file handle..", absFile)
+		removeSock(absFile)
+	}
+	log.Debugf("The plugin absolute path and handle is [ %s ]", absFile)
 }

@@ -160,7 +160,7 @@ func (driver *driver) createNetwork(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		log.Warnf("Error parsing cidr from the default subnet: %s", err)
 	}
-//	cidr := ipNet
+	//	cidr := ipNet
 	driver.cidr = ipNet
 	driver.ipAllocator.RequestIP(driver.cidr, nil)
 

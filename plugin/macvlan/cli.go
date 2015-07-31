@@ -17,5 +17,5 @@ var (
 	macvlanMode     = "bridge"         // should this be the default mode?
 	macvlanEthIface = "eth1"           // default to eth0?
 	defaultSubnet   = "192.168.1.0/24" // Should this just be the eth0 IP subnet?
-	gatewayIP       = "192.168.1.1"  // Should this just be the eth0 IP addr?
+	gatewayIP       = "192.168.1.1"    // Should this just be the eth0 IP addr?
 )
