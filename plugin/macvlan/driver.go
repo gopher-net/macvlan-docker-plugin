@@ -6,11 +6,10 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"strconv"
+	"strings"
 
 	log "github.com/Sirupsen/logrus"
 	"github.com/docker/libnetwork/ipallocator"
-	"github.com/docker/libnetwork/types"
 	"github.com/gorilla/mux"
 	"github.com/samalba/dockerclient"
 	"github.com/vishvananda/netlink"
@@ -160,9 +159,8 @@ func (driver *driver) createNetwork(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		log.Warnf("Error parsing cidr from the default subnet: %s", err)
 	}
-	//	cidr := ipNet
 	driver.cidr = ipNet
-	driver.ipAllocator.RequestIP(driver.cidr, nil)
+	driver.ipAllocator.RequestIP(ipNet, nil)
 
 	emptyResponse(w)
 }
@@ -222,9 +220,13 @@ func (driver *driver) createEndpoint(w http.ResponseWriter, r *http.Request) {
 		errorResponsef(w, "No such network %s", netID)
 		return
 	}
+	_, ipNet, err := net.ParseCIDR(defaultSubnet)
+	if err != nil {
+		log.Warnf("Error parsing cidr from the default subnet: %s", err)
+	}
 	// Request an IP address from libnetwork based on the cidr scope
 	// TODO: Add a user defined static ip addr option
-	allocatedIP, err := driver.ipAllocator.RequestIP(driver.cidr, nil)
+	allocatedIP, err := driver.ipAllocator.RequestIP(ipNet, nil)
 	if err != nil || allocatedIP == nil {
 		log.Errorf("Unable to obtain an IP address from libnetwork ipam: %s", err)
 		errorResponsef(w, "%s", err)
@@ -233,9 +235,10 @@ func (driver *driver) createEndpoint(w http.ResponseWriter, r *http.Request) {
 	// generate a mac address for the pending container
 	mac := makeMac(allocatedIP)
 	// Have to convert container IP to a string ip/mask format
-	_, containerMask := driver.cidr.Mask.Size()
-	containerAddress := allocatedIP.String() + "/" + strconv.Itoa(containerMask)
-	log.Infof("The allocated container IP is: [ %s ]", allocatedIP.String())
+	bridgeMask := strings.Split(ipNet.String(), "/")
+	containerAddress := allocatedIP.String() + "/" + bridgeMask[1]
+
+	log.Infof("Dynamically allocated container IP is: [ %s ]", containerAddress)
 
 	respIface := &iface{
 		Address:    containerAddress,
@@ -375,15 +378,6 @@ func (driver *driver) joinEndpoint(w http.ResponseWriter, r *http.Request) {
 		InterfaceNames: []*iface{ifname},
 		Gateway:        gatewayIP,
 	}
-	// Add Connected Route
-	routeToDNS := &staticRoute{
-		Destination: defaultSubnet,
-		RouteType:   types.CONNECTED,
-		NextHop:     "",
-		InterfaceID: 0,
-	}
-	res.StaticRoutes = []*staticRoute{routeToDNS}
-
 	objectResponse(w, res)
 	log.Debugf("Join endpoint %s:%s to %s", j.NetworkID, j.EndpointID, j.SandboxKey)
 }
