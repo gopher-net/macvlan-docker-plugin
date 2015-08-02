@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	log "github.com/Sirupsen/logrus"
+	"github.com/codegangsta/cli"
 	"github.com/docker/libnetwork/ipallocator"
 	"github.com/gorilla/mux"
 	"github.com/samalba/dockerclient"
@@ -17,8 +18,11 @@ import (
 
 const (
 	MethodReceiver       = "NetworkDriver"
+	bridgeMode           = "bridge"
 	defaultRoute         = "0.0.0.0/0"
 	containerIfacePrefix = "eth"
+	defaultMTU           = 1500
+	minMTU               = 68
 )
 
 type Driver interface {
@@ -34,6 +38,7 @@ type bridgeOpts struct {
 
 type driver struct {
 	dockerer
+	pluginConfig
 	ipAllocator *ipallocator.IPAllocator
 	version     string
 	network     string
@@ -41,19 +46,87 @@ type driver struct {
 	nameserver  string
 }
 
-func New(version string) (Driver, error) {
+// Struct for binding plugin specific configurations (cli.go for details).
+type pluginConfig struct {
+	mtu             int
+	mode            string
+	hostIface       string
+	containerSubnet *net.IPNet
+	gatewayIP       net.IP
+}
+
+func New(version string, ctx *cli.Context) (Driver, error) {
 	docker, err := dockerclient.NewDockerClient("unix:///var/run/docker.sock", nil)
 	if err != nil {
 		return nil, fmt.Errorf("could not connect to docker: %s", err)
 	}
+	if ctx.String("host-interface") == "" {
+		log.Fatalf("Required flag [ host-interface ] that is used for off box communication was not defined. Example: --host-interface=eth1")
+	}
+
+	// bind CLI opts to the user config struct
+	if ok := validateHostIface(ctx.String("host-interface")); !ok {
+		log.Fatalf("Requird field [ host-interface ] ethernet interface [ %s ] was not found. Exiting since this is required for both l2 and l3 modes.", ctx.String("host-interface"))
+	}
+	macvlanEthIface = ctx.String("host-interface")
+
+	// lower bound of v4 MTU is 68-bytes per rfc791
+	if ctx.Int("mtu") <= 0 {
+		cliMTU = cliMTU
+	} else if ctx.Int("mtu") >= minMTU {
+		cliMTU = ctx.Int("mtu")
+	} else {
+		log.Fatalf("The MTU value passed [ %d ] must be greater then [ %d ] bytes per rfc791", ctx.Int("mtu"), minMTU)
+	}
+
+	// Parse the container IP subnet and network addr to be used to guess the gateway if necessary
+	containerGW, containerNet, err := net.ParseCIDR(ctx.String("macvlan-subnet"))
+	if err != nil {
+		log.Fatalf("Error parsing cidr from the subnet flag provided [ %s ]: %s", ctx.String("macvlan-subnet"), err)
+	}
+
+	// Set the default mode to bridge
+	if ctx.String("mode") == "" {
+		macvlanMode = bridgeMode
+	}
+	switch ctx.String("mode") {
+	case bridgeMode:
+		macvlanMode = bridgeMode
+		// todo: in other modes if relevant
+	default:
+		log.Fatalf("Invalid macvlan mode supplied [ %s ] we currently only support [ %s ] mode. If mode is left empty, bridge is the default mode.", ctx.String("mode"), macvlanMode)
+	}
+
+	// if no gateway was passed, use the first valid addr on the container subnet
+	if ctx.String("gateway") != "" {
+		// bind the container gateway to the IP passed from the CLI
+		cliGateway := net.ParseIP(ctx.String("gateway"))
+		if err != nil {
+			log.Fatalf("The IP passed with the [ gateway ] flag [ %s ] was not a valid address: %s", ctx.String("gateway"), err)
+		}
+		containerGW = cliGateway
+	} else {
+		containerGW = ipIncrement(containerGW)
+	}
+
+	pluginOpts := &pluginConfig{
+		mtu:             cliMTU,
+		mode:            macvlanMode,
+		containerSubnet: containerNet,
+		gatewayIP:       containerGW,
+		hostIface:       macvlanEthIface,
+	}
+	// Leaving as info for now to stdout the plugin config
+	log.Infof("Plugin configuration options are: \n %s", pluginOpts)
 
 	ipAllocator := ipallocator.New()
 	d := &driver{
 		dockerer: dockerer{
 			client: docker,
 		},
-		ipAllocator: ipAllocator,
-		version:     version,
+		ipAllocator:  ipAllocator,
+		version:      version,
+		pluginConfig: *pluginOpts,
 	}
 	return d, nil
 }
@@ -161,7 +234,6 @@ func (driver *driver) createNetwork(w http.ResponseWriter, r *http.Request) {
 	}
 	driver.cidr = ipNet
 	driver.ipAllocator.RequestIP(ipNet, nil)
-
 	emptyResponse(w)
 }
 
@@ -220,25 +292,24 @@ func (driver *driver) createEndpoint(w http.ResponseWriter, r *http.Request) {
 		errorResponsef(w, "No such network %s", netID)
 		return
 	}
-	_, ipNet, err := net.ParseCIDR(defaultSubnet)
-	if err != nil {
-		log.Warnf("Error parsing cidr from the default subnet: %s", err)
-	}
+
 	// Request an IP address from libnetwork based on the cidr scope
 	// TODO: Add a user defined static ip addr option
-	allocatedIP, err := driver.ipAllocator.RequestIP(ipNet, nil)
+	allocatedIP, err := driver.ipAllocator.RequestIP(driver.cidr, nil)
 	if err != nil || allocatedIP == nil {
 		log.Errorf("Unable to obtain an IP address from libnetwork ipam: %s", err)
 		errorResponsef(w, "%s", err)
 		return
 	}
+
 	// generate a mac address for the pending container
 	mac := makeMac(allocatedIP)
+
 	// Have to convert container IP to a string ip/mask format
-	bridgeMask := strings.Split(ipNet.String(), "/")
+	bridgeMask := strings.Split(driver.cidr.String(), "/")
 	containerAddress := allocatedIP.String() + "/" + bridgeMask[1]
 
-	log.Infof("Dynamically allocated container IP is: [ %s ]", containerAddress)
+	log.Infof("The allocated container IP is: [ %s ]", allocatedIP.String())
 
 	respIface := &iface{
 		Address:    containerAddress,
@@ -264,7 +335,7 @@ func (driver *driver) deleteEndpoint(w http.ResponseWriter, r *http.Request) {
 	}
 	log.Debugf("Delete endpoint request: %+v", &delete)
 	emptyResponse(w)
-	// null check cidr in case driver restarted and doesnt know the network to avoid panic
+	// null check cidr in case driver restarted and doesn't know the network to avoid panic
 	if driver.cidr == nil {
 		return
 	}
@@ -352,14 +423,14 @@ func (driver *driver) joinEndpoint(w http.ResponseWriter, r *http.Request) {
 		log.Errorf("%s", err)
 		return
 	}
-	m, err := netlink.LinkByName(macvlanEthIface)
+	hostEth, err := netlink.LinkByName(macvlanEthIface)
 	if err != nil {
 		log.Warnf("Error looking up the parent iface [ %s ] mode: [ %s ] error: [ %s ]", macvlanEthIface, mode, err)
 	}
 	macvlan := &netlink.Macvlan{
 		LinkAttrs: netlink.LinkAttrs{
 			Name:        preMoveName,
-			ParentIndex: m.Attrs().Index,
+			ParentIndex: hostEth.Attrs().Index,
 		},
 		Mode: mode,
 	}
@@ -385,7 +456,6 @@ func (driver *driver) joinEndpoint(w http.ResponseWriter, r *http.Request) {
 type leave struct {
 	NetworkID  string
 	EndpointID string
-	Options    map[string]interface{}
 }
 
 func (driver *driver) leaveEndpoint(w http.ResponseWriter, r *http.Request) {
@@ -397,4 +467,14 @@ func (driver *driver) leaveEndpoint(w http.ResponseWriter, r *http.Request) {
 	log.Debugf("Leave request: %+v", &l)
 	emptyResponse(w)
 	log.Debugf("Leave %s:%s", l.NetworkID, l.EndpointID)
+}
+
+// return string representation of user options in pluginConfig for debugging
+func (d *pluginConfig) String() string {
+	str := fmt.Sprintf(" container subnet: [%s],\n", d.containerSubnet.String())
+	str = str + fmt.Sprintf("  container gateway: [%s],\n", d.gatewayIP.String())
+	str = str + fmt.Sprintf("  host interface: [%s],\n", d.hostIface)
+	str = str + fmt.Sprintf("  mmtu: [%d],\n", d.mtu)
+	str = str + fmt.Sprintf("  ipvlan mode: [%s]", d.mode)
+	return str
 }

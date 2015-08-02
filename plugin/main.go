@@ -36,6 +36,7 @@ func main() {
 		macvlan.FlagMacvlanMode,
 		macvlan.FlagGateway,
 		macvlan.FlagBridgeSubnet,
+		macvlan.FlagMacvlanEth,
 	}
 	app.Before = initEnv
 	app.Action = Run
@@ -59,7 +60,7 @@ func initEnv(ctx *cli.Context) error {
 func Run(ctx *cli.Context) {
 	var d macvlan.Driver
 	var err error
-	if d, err = macvlan.New(version); err != nil {
+	if d, err = macvlan.New(version, ctx); err != nil {
 		log.Fatalf("unable to create driver: %s", err)
 	}
 	log.Info("Macvlan network driver initialized successfully")
