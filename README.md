@@ -1,6 +1,8 @@
 macvlan-docker-plugin
 =================
 
+Macvlan is a lightweight L2 network implementation that does not require traditional bridges. The purpose of this is to have references for plugging into the docker networking APIs which are now available as part of libnetwork. Libnetwork is still under development and is considered as experimental at this point.
+
 ### Pre-Requisites
 
 1. Install the Docker experimental binary from the instructions at: [Docker Experimental](https://github.com/docker/docker/tree/master/experimental). (stop other docker instances)
@@ -9,18 +11,34 @@ macvlan-docker-plugin
 ### QuickStart Instructions
 
 
-1. Start Docker with the following. (TODO: since macvlan doesnt use a bridge, should we point to the parent link name?)
-`docker -d --default-network=macvlan:docker0`
+1. Start Docker with the following. **TODO:** How to specify the plugin socket without having to pass a bridge name since macvlan/ipvlan dont use traditional bridges. This example is running docker in the foreground so you can see the logs realtime.
 
-2. Next start the plugin. A pre-compiled x86_64 binary can be downloaded from the [binaries](https://github.com/gopher-net/macvlan-docker-plugin/binaries) directory.
+    ```
+    docker -d --default-network=macvlan:foo`
+
+    ```
+
+2. Download the plugin binary. A pre-compiled x86_64 binary can be downloaded from the [binaries](https://github.com/gopher-net/macvlan-docker-plugin/binaries) directory.
 
 	```
 	$ wget -O ./macvlan-docker-plugin https://github.com/gopher-net/macvlan-docker-plugin/binaries/macvlan-docker-plugin-0.1-Linux-x86_64
 	$ chmod +x macvlan-docker-plugin
-	$ ./macvlan-docker-plugin
 	```
 
-3. Start the plugin with `./macvlan-docker-plugin` for debugging or just extra logs from the sausage factory, add the debug flag `./macvlan-docker-plugin -d`
+3. In a new window, start the plugin with the following. Replace the values with the appropriate setup to match the network the docker host is attached to.
+
+    ```
+    	$ ./macvlan-docker-plugin \
+    	        --gateway=192.168.1.1 \
+    	        --macvlan-subnet=192.168.1.0/24 \
+    	        --host-interface=eth1 \
+    	         -mode=bridge
+    # Or in one line:
+
+	$ ./macvlan-docker-plugin --gateway=192.168.1.1 --macvlan-subnet=192.168.1.0/24 -mode=bridge  --host-interface=eth1
+    ```
+
+    for debugging, or just extra logs from the sausage factory, add the debug flag `./macvlan-docker-plugin -d`.
 
 4. Run some containers and verify they can ping one another with `docker run -it --rm busybox` or `docker run -it --rm ubuntu` etc, any other docker images you prefer. Alternatively,`docker run -itd busybox`
 
@@ -30,8 +48,8 @@ macvlan-docker-plugin
 
  **Additional Notes**:
  - The argument passed to `--default-network` the plugin is identified via `macvlan`. More specifically, the socket file that currently defaults to `/usr/share/docker/plugins/macvlan.sock`. If the filepath does not exist at runtime it will be created.
- - The networks are temporarily hardcoded. That and more will be configurable via flags. (Help us define and code those flags). Flags still need to be bound to structs also.
- - The containers are brought up on a flat bridge. This means there is no NATing occurring. A layer 2 adjacency such as a VLAN or overlay tunnel is required for multi-host communications. If the traffic needs to be routed an external process to act as a gateway (on the TODO list so dig in if interested in multi-host or overlays).
+ - There are default values attached to each flag since a big reason for this project is to help folks learn the libnetwork plugins.
+ - The containers are brought up on a flat bridge. This means there is no NATing occurring. A layer 2 adjacency such as a VLAN or overlay tunnel is required for multi-host communications. If the traffic needs to be routed an external process to act as a gateway.
  - Download a quick macvlan video recording [here](https://www.dropbox.com/s/w0gts0kjs580k78/Macvlan-demo.mp4?dl=1).
  - Since this plugin uses netlink, a Linux host that can build [vishvananda/netlink](https://github.com/vishvananda/netlink) library is required.
 
@@ -55,22 +73,22 @@ Since the network parameters are hardcoded for the next day or two, I think it m
  - Start macvlan-plugin-docker either using `go run main.go` or run the included binary `/macvlan-docker-plugin` in the binaries directory.
 
 
- - Container output:
+ - Container output (**note:** since this is a flat single host L2 deployment, the subnet gateway is an external router of `192.168.1.1`):
 
     ```
     docker run -i -t --rm busybox
-    # ifconfig eth0
+    $ ifconfig eth0
     eth0      Link encap:Ethernet  HWaddr 72:3A:D8:99:30:A8
-           inet addr:192.168.1.2  Bcast:0.0.0.0  Mask:255.255.255.255
+           inet addr:192.168.1.2  Bcast:0.0.0.0  Mask:255.255.255.0
            UP BROADCAST RUNNING MULTICAST  MTU:1500  Metric:1
            RX packets:1 errors:0 dropped:0 overruns:0 frame:0
            TX packets:7 errors:0 dropped:0 overruns:0 carrier:0
            collisions:0 txqueuelen:0
            RX bytes:60 (60.0 B)  TX bytes:578 (578.0 B)
 
-    # ip route
+    $ ip route
     default via 192.168.1.1 dev eth0
-    192.168.1.0/24 dev eth0  scope link
+    192.168.1.0/24 dev eth0  proto kernel  scope link  src 192.168.1.2
 
     / # ping 8.8.8.8
     PING 8.8.8.8 (8.8.8.8): 56 data bytes
@@ -85,11 +103,23 @@ Since the network parameters are hardcoded for the next day or two, I think it m
  - The driver output will look something like the following as a container is created and then removed:
 
     ```
-    go run main.go
+    # The following are all the default values.
+    # If you were to only run: go run main.go -d
+    # It would be the same values as below. On almost
+    # all cases you would define a subnet and gateway that
+    # fit into the network you are plugging into.
+    go run main.go -d --gateway=192.168.1.1 --bridge-subnet=192.168.1.0/24 -mode=bridge
     INFO[0000] Macvlan network driver initialized successfully
     INFO[0002] The allocated container IP is: [ 192.168.1.2 ]
     INFO[0002] Created Macvlan port: [ c78c9 ] using the mode: [ bridge ]
     INFO[0902] Removing unused macvlan link [ c78c9 ] from the removed container
+    ```
+
+- As you are hacking, if you run into a scenario where you feel as if you have stale namespaces that are not getting GC'ed you can manually cleanup the netns with the following. An example would be if you `control^c` three times and sent a SIGQUIT rather then waiting on a single `control^c` and the `SIGINT` allowing the process to cleaning shutdown.
+
+    ```
+    $ umount /var/run/docker/netns/*
+    $ rm /var/run/docker/netns/*
     ```
 
 ### Hacking and Contributing
