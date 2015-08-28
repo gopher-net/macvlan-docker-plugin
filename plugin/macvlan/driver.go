@@ -76,10 +76,11 @@ func New(version string, ctx *cli.Context) (Driver, error) {
 	} else if ctx.Int("mtu") >= minMTU {
 		cliMTU = ctx.Int("mtu")
 	} else {
-		log.Fatalf("The MTU value passed [ %d ] must be greater then [ %d ] bytes per rfc791", ctx.Int("mtu"), minMTU)
+		log.Fatalf("The MTU value passed [ %d ] must be greater than [ %d ] bytes per rfc791", ctx.Int("mtu"), minMTU)
 	}
 
 	// Parse the container IP subnet and network addr to be used to guess the gateway if necessary
+	defaultSubnet = ctx.String("macvlan-subnet")
 	containerGW, containerNet, err := net.ParseCIDR(ctx.String("macvlan-subnet"))
 	if err != nil {
 		log.Fatalf("Error parsing cidr from the subnet flag provided [ %s ]: %s", ctx.String("macvlan-subnet"), err)
@@ -108,6 +109,8 @@ func New(version string, ctx *cli.Context) (Driver, error) {
 	} else {
 		containerGW = ipIncrement(containerGW)
 	}
+
+	gatewayIP = containerGW.String()
 
 	pluginOpts := &pluginConfig{
 		mtu:             cliMTU,
