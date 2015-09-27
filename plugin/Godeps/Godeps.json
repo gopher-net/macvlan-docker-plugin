@@ -1,0 +1,55 @@
+{
+	"ImportPath": "github.com/gopher-net/macvlan-docker-plugin/plugin",
+	"GoVersion": "go1.5",
+	"Packages": [
+		"./..."
+	],
+	"Deps": [
+		{
+			"ImportPath": "github.com/Sirupsen/logrus",
+			"Comment": "v0.8.7",
+			"Rev": "418b41d23a1bf978c06faea5313ba194650ac088"
+		},
+		{
+			"ImportPath": "github.com/codegangsta/cli",
+			"Comment": "1.2.0-137-gbca61c4",
+			"Rev": "bca61c476e3c752594983e4c9bcd5f62fb09f157"
+		},
+		{
+			"ImportPath": "github.com/docker/docker/pkg/units",
+			"Comment": "v1.4.1-4106-g637023a",
+			"Rev": "637023a5f8d8347a0e271c09d5c9bc84fbc97693"
+		},
+		{
+			"ImportPath": "github.com/docker/libnetwork/ipallocator",
+			"Comment": "v0.2-484-g5395a29",
+			"Rev": "5395a29bd9ae5504aed5fb41d32941a1f80fe809"
+		},
+		{
+			"ImportPath": "github.com/docker/libnetwork/netutils",
+			"Comment": "v0.2-484-g5395a29",
+			"Rev": "5395a29bd9ae5504aed5fb41d32941a1f80fe809"
+		},
+		{
+			"ImportPath": "github.com/docker/libnetwork/types",
+			"Comment": "v0.2-484-g5395a29",
+			"Rev": "5395a29bd9ae5504aed5fb41d32941a1f80fe809"
+		},
+		{
+			"ImportPath": "github.com/gorilla/context",
+			"Rev": "215affda49addc4c8ef7e2534915df2c8c35c6cd"
+		},
+		{
+			"ImportPath": "github.com/gorilla/mux",
+			"Rev": "8096f47503459bcc74d1f4c487b7e6e42e5746b5"
+		},
+		{
+			"ImportPath": "github.com/samalba/dockerclient",
+			"Rev": "5ba36c1ad5b75c34be407bfaac51bd02ccb8c654"
+		},
+		{
+			"ImportPath": "github.com/vishvananda/netlink",
+			"Rev": "b8d3e51d2a985af316ce499e328f530f0f6e37a1"
+		}
+	]
+}

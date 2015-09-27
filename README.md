@@ -42,7 +42,7 @@ Macvlan is a lightweight L2 network implementation that does not require traditi
 
 4. Run some containers and verify they can ping one another with `docker run -it --rm busybox` or `docker run -it --rm ubuntu` etc, any other docker images you prefer. Alternatively,`docker run -itd busybox`
 
-    * Or use the script `release-the-whales.sh` in the `scripts/` directory to launch a bunch of lightweight busybox instances to see how well the plugin scales for you. It can also serve as temporary integration testing until we get CI setup. See the comments in the script for usage. Keep in mind, the subnet defined in `cli.go` is the temporarily hardcoded network address `192.168.1.0/24` and will hand out addresses starting at `192.168.1.2`. This is very temporary until we bind CLI options to the driver data struct.
+    * Or use the script `release-the-whales.sh` in the `scripts/` directory to launch a bunch of lightweight busybox instances to see how well the plugin scales for you.
 
 5. The default macvlan mode is `bridge`. This works much like traditional vlans where a ToR switch or some other router would be the gateway in a data center. Currently, in order to have two subnets talk to one another it requires an L3 router. This is typical in the vast majority of DCs today. Again, this is just early, more to come and tons of ways to help if interested.
 
@@ -53,14 +53,8 @@ Macvlan is a lightweight L2 network implementation that does not require traditi
  - Download a quick macvlan video recording [here](https://www.dropbox.com/s/w0gts0kjs580k78/Macvlan-demo.mp4?dl=1).
  - Since this plugin uses netlink, a Linux host that can build [vishvananda/netlink](https://github.com/vishvananda/netlink) library is required.
 
-### Example Output (This section is temporary until network config is user configurable):
+### Example Output:
 
-Since the network parameters are hardcoded for the next day or two, I think it makes sense to show the output. This will be removed as soon as the network parameters are user defined.
-
-**Note:** All of the following values can be modified in `cli.go` and will be configurable via plugin parameters/config over the next couple of nights of hacking and this section will be removed at that point.
-
- - The network address is `192.168.1.0/24` and the gateway is `192.168.1.1`. The gateway address is an external L3 router (home router, DC L3 leaf node, iptables on a Linux host etc.).
- - The hardcoded interface on the docker host is `eth1` (underlying OS that Docker is running on).
 
     ```
     ip addr show eth1
@@ -126,3 +120,19 @@ Since the network parameters are hardcoded for the next day or two, I think it m
 
 Yes!! This is a purely community project by folks hacking in their free time to provide references for plugging in to Docker via libnetwork remote APIs along with simple deployments for the array of common network architectures deployed in existing data centers today. Please see issues for todos or add todos you would like to add or that we can help you get accomplished if you are new to Docker, Go, networks or programming. This is an excting place and time to evolve with the community. The only rule here is no jerks :)
 
+Use [Godep](https://github.com/tools/godep) for dependencies. There is a godbus version that conflicts with vish netlink listed below.
+
+Install and use Godep with the following:
+
+```
+$ go get github.com/tools/godep
+# From inside the plugin directory where the Godep directory is restore the snapshotted dependencies used by libnetwork:
+$ godep restore
+```
+
+The version of [godbus/dbus](https://github.com/godbus/dbus) has issues with [vishvananda/netlink](https://github.com/vishvananda/netlink) that will lead to this error at build time:
+
+```
+../../../docker/libnetwork/iptables/firewalld.go:75: cannot use c.sysconn.Object(dbusInterface, dbus.ObjectPath(dbusPath)) (type dbus.BusObject) as type *dbus.
+Object in assignment: need type assertion
+```
