@@ -140,6 +140,7 @@ func (driver *driver) Listen(socket string) error {
 
 	router.Methods("GET").Path("/status").HandlerFunc(driver.status)
 	router.Methods("POST").Path("/Plugin.Activate").HandlerFunc(driver.handshake)
+	router.Methods("POST").Path("/NetworkDriver.GetCapabilities").HandlerFunc(driver.capabilities)
 
 	handleMethod := func(method string, h http.HandlerFunc) {
 		router.Methods("POST").Path(fmt.Sprintf("/%s.%s", MethodReceiver, method)).HandlerFunc(h)
@@ -165,7 +166,7 @@ func (driver *driver) Listen(socket string) error {
 }
 
 func notFound(w http.ResponseWriter, r *http.Request) {
-	log.Warnf("[plugin] Not found: %+v", r)
+	log.Warnf("plugin Not found: [ %+v ]", r)
 	http.NotFound(w, r)
 }
 
@@ -205,6 +206,22 @@ func (driver *driver) handshake(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	log.Debug("Handshake completed")
+}
+
+type capabilitiesResp struct {
+	Scope string
+}
+
+func (driver *driver) capabilities(w http.ResponseWriter, r *http.Request) {
+	err := json.NewEncoder(w).Encode(&capabilitiesResp{
+		"local",
+	})
+	if err != nil {
+		log.Fatalf("capabilities encode: %s", err)
+		sendError(w, "encode error", http.StatusInternalServerError)
+		return
+	}
+	log.Debug("Capabilities exchange complete")
 }
 
 func (driver *driver) status(w http.ResponseWriter, r *http.Request) {
@@ -264,20 +281,25 @@ func (driver *driver) deleteNetwork(w http.ResponseWriter, r *http.Request) {
 type endpointCreate struct {
 	NetworkID  string
 	EndpointID string
-	Interfaces []*iface
+	Interface  *EndpointInterface
 	Options    map[string]interface{}
 }
 
-type iface struct {
-	ID         int
-	SrcName    string
-	DstPrefix  string
-	Address    string
-	MacAddress string
+// EndpointInterface represents an interface endpoint.
+type EndpointInterface struct {
+	Address     string
+	AddressIPv6 string
+	MacAddress  string
+}
+
+type InterfaceName struct {
+	SrcName   string
+	DstName   string
+	DstPrefix string
 }
 
 type endpointResponse struct {
-	Interfaces []*iface
+	Interface EndpointInterface
 }
 
 func (driver *driver) createEndpoint(w http.ResponseWriter, r *http.Request) {
@@ -295,7 +317,7 @@ func (driver *driver) createEndpoint(w http.ResponseWriter, r *http.Request) {
 		errorResponsef(w, "No such network %s", netID)
 		return
 	}
-
+	log.Debugf("The container subnet for this context is [ %s ]", driver.pluginConfig.containerSubnet.String())
 	// Request an IP address from libnetwork based on the cidr scope
 	// TODO: Add a user defined static ip addr option
 	allocatedIP, err := driver.ipAllocator.RequestIP(driver.cidr, nil)
@@ -312,15 +334,16 @@ func (driver *driver) createEndpoint(w http.ResponseWriter, r *http.Request) {
 	bridgeMask := strings.Split(driver.cidr.String(), "/")
 	containerAddress := allocatedIP.String() + "/" + bridgeMask[1]
 
-	log.Infof("The allocated container IP is: [ %s ]", allocatedIP.String())
+	log.Infof("Allocated container IP: [ %s ]", containerAddress)
 
-	respIface := &iface{
+	respIface := &EndpointInterface{
 		Address:    containerAddress,
 		MacAddress: mac,
 	}
 	resp := &endpointResponse{
-		Interfaces: []*iface{respIface},
+		Interface: *respIface,
 	}
+	log.Debugf("Create endpoint response: %+v", resp)
 	objectResponse(w, resp)
 	log.Debugf("Create endpoint %s %+v", endID, resp)
 }
@@ -344,19 +367,24 @@ func (driver *driver) deleteEndpoint(w http.ResponseWriter, r *http.Request) {
 	}
 	// ReleaseIP releases an ip back to a network
 	if err := driver.ipAllocator.ReleaseIP(driver.cidr, driver.cidr.IP); err != nil {
-		log.Warnf("error releasing IP: %s", err)
+		log.Warnf("Error releasing IP: %s", err)
 	}
 	log.Debugf("Delete endpoint %s", delete.EndpointID)
 
 	containerLink := delete.EndpointID[:5]
-
-	log.Infof("Removing unused macvlan link [ %s ] from the removed container", containerLink)
-	clink, err := netlink.LinkByName(containerLink)
-	if err != nil {
-		log.Warnf("Error looking up link [ %s ] object: [ %v ] error: [ %s ]", clink.Attrs().Name, clink, err)
+	// Check the interface to delete exists to avoid a netlink panic
+	if ok := validateHostIface(containerLink); !ok {
+		log.Errorf("The requested interface to delete [ %s ] was not found on the host.", containerLink)
+		return
 	}
-	if err := netlink.LinkDel(clink); err != nil {
-		log.Errorf("unable to delete the Macvlan link [ %s ] on leave: %s", clink, err)
+	link, err := netlink.LinkByName(containerLink)
+	if err != nil {
+		log.Errorf("Error looking up link [ %s ] object: [ %v ] error: [ %s ]", link.Attrs().Name, link, err)
+		return
+	}
+	log.Infof("Deleting the unused macvlan link [ %s ] from the removed container", link.Attrs().Name)
+	if err := netlink.LinkDel(link); err != nil {
+		log.Errorf("unable to delete the Macvlan link [ %s ] on leave: %s", link.Attrs().Name, err)
 	}
 }
 
@@ -381,11 +409,9 @@ func (driver *driver) infoEndpoint(w http.ResponseWriter, r *http.Request) {
 }
 
 type joinInfo struct {
-	InterfaceNames []*iface
-	Gateway        string
-	GatewayIPv6    string
-	HostsPath      string
-	ResolvConfPath string
+	InterfaceName *InterfaceName
+	Gateway       string
+	GatewayIPv6   string
 }
 
 type join struct {
@@ -399,15 +425,12 @@ type staticRoute struct {
 	Destination string
 	RouteType   int
 	NextHop     string
-	InterfaceID int
 }
 
 type joinResponse struct {
-	HostsPath      string
-	ResolvConfPath string
-	Gateway        string
-	InterfaceNames []*iface
-	StaticRoutes   []*staticRoute
+	Gateway       string
+	InterfaceName InterfaceName
+	StaticRoutes  []*staticRoute
 }
 
 func (driver *driver) joinEndpoint(w http.ResponseWriter, r *http.Request) {
@@ -423,9 +446,10 @@ func (driver *driver) joinEndpoint(w http.ResponseWriter, r *http.Request) {
 	preMoveName := endID[:5]
 	mode, err := setVlanMode(macvlanMode)
 	if err != nil {
-		log.Errorf("%s", err)
+		log.Errorf("error parsing vlan mode [ %v ]: %s", mode, err)
 		return
 	}
+	// Get the link for the master index (Example: the docker host eth iface)
 	hostEth, err := netlink.LinkByName(macvlanEthIface)
 	if err != nil {
 		log.Warnf("Error looking up the parent iface [ %s ] mode: [ %s ] error: [ %s ]", macvlanEthIface, mode, err)
@@ -438,19 +462,28 @@ func (driver *driver) joinEndpoint(w http.ResponseWriter, r *http.Request) {
 		Mode: mode,
 	}
 	if err := netlink.LinkAdd(macvlan); err != nil {
-		log.Warnf("failed to create Macvlan: [ %v ] with the error: %s", macvlan, err)
+		log.Errorf("failed to create Macvlan: [ %v ] with the error: %s", macvlan, err)
+		log.Error("Ensure there are no existing [ ipvlan ] type links and remove with 'ip link del <link_name>'," +
+			" also check `/var/run/docker/netns/` for orphaned links to unmount and delete, then restart the plugin")
+		return
 	}
 	log.Infof("Created Macvlan port: [ %s ] using the mode: [ %s ]", macvlan.Name, macvlanMode)
-
+	// Set the netlink iface MTU, default is 1500
+	if err := netlink.LinkSetMTU(macvlan, defaultMTU); err != nil {
+		log.Errorf("Error setting the MTU [ %d ] for link [ %s ]: %s", defaultMTU, macvlan.Name, err)
+	}
+	// Bring the netlink iface up
+	if err := netlink.LinkSetUp(macvlan); err != nil {
+		log.Warnf("failed to enable the [ macvlan ] netlink link: [ %v ]", macvlan, err)
+	}
 	// SrcName gets renamed to DstPrefix on the container iface
-	ifname := &iface{
+	ifname := &InterfaceName{
 		SrcName:   macvlan.Name,
 		DstPrefix: containerIfacePrefix,
-		ID:        0,
 	}
 	res := &joinResponse{
-		InterfaceNames: []*iface{ifname},
-		Gateway:        gatewayIP,
+		InterfaceName: *ifname,
+		Gateway:       gatewayIP,
 	}
 	objectResponse(w, res)
 	log.Debugf("Join endpoint %s:%s to %s", j.NetworkID, j.EndpointID, j.SandboxKey)
@@ -459,6 +492,7 @@ func (driver *driver) joinEndpoint(w http.ResponseWriter, r *http.Request) {
 type leave struct {
 	NetworkID  string
 	EndpointID string
+	Options    map[string]interface{}
 }
 
 func (driver *driver) leaveEndpoint(w http.ResponseWriter, r *http.Request) {
@@ -478,6 +512,6 @@ func (d *pluginConfig) String() string {
 	str = str + fmt.Sprintf("  container gateway: [%s],\n", d.gatewayIP.String())
 	str = str + fmt.Sprintf("  host interface: [%s],\n", d.hostIface)
 	str = str + fmt.Sprintf("  mmtu: [%d],\n", d.mtu)
-	str = str + fmt.Sprintf("  ipvlan mode: [%s]", d.mode)
+	str = str + fmt.Sprintf("  macvlan mode: [%s]", d.mode)
 	return str
 }
