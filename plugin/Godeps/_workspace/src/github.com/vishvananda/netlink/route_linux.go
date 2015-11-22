@@ -119,7 +119,6 @@ func RouteList(link Link, family int) ([]Route, error) {
 
 	native := nl.NativeEndian()
 	var res []Route
-MsgLoop:
 	for _, m := range msgs {
 		msg := nl.DeserializeRtMsg(m)
 
@@ -154,7 +153,7 @@ MsgLoop:
 				routeIndex := int(native.Uint32(attr.Value[0:4]))
 				if link != nil && routeIndex != index {
 					// Ignore routes from other interfaces
-					continue MsgLoop
+					continue
 				}
 				route.LinkIndex = routeIndex
 			}
