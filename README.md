@@ -1,126 +1,107 @@
-macvlan-docker-plugin
+ipvlan-docker-plugin
 =================
 
-Macvlan is a lightweight L2 network implementation that does not require traditional bridges. The purpose of this is to have references for plugging into the docker networking APIs which are now available as part of libnetwork. Libnetwork is still under development and is considered as experimental at this point.
+This repo is for examples of a plugin w/ libnetwork and temporary until we get Ipvlan/Macvlan native driver support in Docker which will be
+relatively soon. This will deprecate in order to focus on much more interesting Gopher networking scenarios like integrations. While it can be supported here, the effort would be kind of wasted since we will get it native soon so
+hang tight for trunks.
+
+
+Macvlan is a lightweight bridgless implementation that can be ideal for some scenarios that fit simple network needs with vlans and 802.1q trunks.
 
 ### Pre-Requisites
 
-1. Install the Docker experimental binary from the instructions at: [Docker Experimental](https://github.com/docker/docker/tree/master/experimental). (stop other docker instances)
-	- Quick Experimental Install: `wget -qO- https://experimental.docker.com/ | sh`
+#### Kernel Dependencies
 
-### QuickStart Instructions
+The kernel dependency is the macvlan kernel module support. You can verify if you have it compiled in or not with the following:
+
+```
+$ modprobe macvlan
+$ lsmod | grep macvlan
+  macvlan   24576  0
+```
+If you get any errors or it doesn't show up from `lsmod` then you probably need to simply upgrade the kernel version. Here is an example upgrade to `v4.3-rc2` that works on both Ubuntu 15.04 and 14.10 along with the similar Debian distributions.
+
+```
+$ wget http://kernel.ubuntu.com/~kernel-ppa/mainline/v4.3-rc2-unstable/linux-headers-4.3.0-040300rc2_4.3.0-040300rc2.201509201830_all.deb
+$ wget http://kernel.ubuntu.com/~kernel-ppa/mainline/v4.3-rc2-unstable/linux-headers-4.3.0-040300rc2-generic_4.3.0-040300rc2.201509201830_amd64.deb
+$ wget http://kernel.ubuntu.com/~kernel-ppa/mainline/v4.3-rc2-unstable/linux-image-4.3.0-040300rc2-generic_4.3.0-040300rc2.201509201830_amd64.deb
+$ dpkg -i linux-headers-4.3*.deb linux-image-4.3*.deb
+$ reboot
+```
+
+As of Docker v1.9 the docker/libnetwork APIs are packaged by default in Docker. Grab the latest or v1.9+ version of Docker from [Latest Linux
+binary from Docker](http://docs.docker.com/engine/installation/binaries/). Alternatively `curl -sSL https://get.docker.com/ | sh` or from your
+distribution repo or docker repos.
+
+### Macvlan Bridge Mode Instructions
+
+**1.** Start Docker with the following or simply start the service. Version 1.9+ is required.
+
+```
+$ docker -v
+Docker version 1.9.1, build a34a1d5
+
+# -D is optional debugging
+$ docker daemon -D
+```
+
+**2.**  Start the driver in bridge mode.
+
+- *Note:* The host-interface flag is the Docker host's eth interface. It shouldnt be required for the driver but this is a bit lazy and isnt
+honoring docker network opts yet.
+
+In the repo directory, use the binary named `macvlan-docker-plugin-0.2-Linux-x86_64`. Feel free to rename it :)
+
+```
+$ git clone https://github.com/gopher-net/macvlan-docker-plugin.git
+$ cd macvlan-docker-plugin/binaries
+$ ./macvlan-docker-plugin-0.2-Linux-x86_64 -d --host-interface=eth1 --mode=bridge
+
+# -d is debug
+# --host-interface is the master interface, eth0, eth1 etc. The docker network create needs to correspond to that subnet for bridge mode
+```
+
+**3.** Create a network with Docker
+
+**Note** the subnet needs to correspond to the master interface.  In this example, the nic `eth1` is attached to a subnet `192.168.1.0/24`. The container needs to be on the same *broadast domain* as the default gateway. In this case it is a router with the address of `192.168.1.1`.
+
+*TODO is to honor the Docker opts that will enable multiple master interfaces for
+subinterfaces and other ethX interfaces at once. Opts from Docker network are parsed, just not honored. Adding that to a native driver into
+libnetwork will be easier and more likely then anyone doing it here.*
+
+```
+$ docker network create -d macvlan --subnet=192.168.1.0/24 --gateway=192.168.1.1 -o host_iface=eth1 net1
+```
+
+**4.** Run some containers on the new network
+
+ Run some containers, specify the network and verify they can ping one another
+
+```
+$ docker run --net=net1 -it --rm ubuntu
+```
+
+Docker networks are now persistant after a reboot. To remove all of the network configs on a docker daemon restart you can simply delete the directory with: `rm  /var/lib/docker/network/files/*`
+
+### Notes and General Macvlan Caveats
+
+- There can only be one network type bound to the host interface at any given time. Example: Macvlan Bridge or IPVlan L2. There is no mixing.
+- The specified gateway is external to the host or at least not defined by the driver itself.
+- Multiple drivers can be active at any time. However, Macvlan and Ipvlan are not compatable on the same master interface (e.g. eth0).
+- You can create multiple networks and have active containers in each network as long as they are all of the same mode type.
+- Each network is isolated from one another. Any container inside the network/subnet can talk to one another without a reachable gateway.
+- Containers on separate networks cannot reach one another without an external process routing between the two networks/subnets.
 
 
-1. Start Docker with the following. **TODO:** How to specify the plugin socket without having to pass a bridge name since macvlan/ipvlan dont use traditional bridges. This example is running docker in the foreground so you can see the logs realtime.
+### Dev and issues
 
-    ```
-    docker -d --default-network=macvlan:foo`
+To run the plugin via Go for hacking simply run go with the `main.go` entry point and desired parameters. The same applies to the [gopher-net/ipvlan](https://github.com/gopher-net/ipvlan-docker-plugin) driver:
 
-    ```
+```
+go run main.go -d --host-interface=eth1 --mode=bridge
+```
 
-2. Download the plugin binary. A pre-compiled x86_64 binary can be downloaded from the [binaries](https://github.com/gopher-net/macvlan-docker-plugin/binaries) directory.
-
-	```
-	$ wget -O ./macvlan-docker-plugin https://github.com/gopher-net/macvlan-docker-plugin/binaries/macvlan-docker-plugin-0.1-Linux-x86_64
-	$ chmod +x macvlan-docker-plugin
-	```
-
-3. In a new window, start the plugin with the following. Replace the values with the appropriate setup to match the network the docker host is attached to.
-
-    ```
-    	$ ./macvlan-docker-plugin \
-    	        --gateway=192.168.1.1 \
-    	        --macvlan-subnet=192.168.1.0/24 \
-    	        --host-interface=eth1 \
-    	         -mode=bridge
-    # Or in one line:
-
-	$ ./macvlan-docker-plugin --gateway=192.168.1.1 --macvlan-subnet=192.168.1.0/24 -mode=bridge  --host-interface=eth1
-    ```
-
-    for debugging, or just extra logs from the sausage factory, add the debug flag `./macvlan-docker-plugin -d`.
-
-4. Run some containers and verify they can ping one another with `docker run -it --rm busybox` or `docker run -it --rm ubuntu` etc, any other docker images you prefer. Alternatively,`docker run -itd busybox`
-
-    * Or use the script `release-the-whales.sh` in the `scripts/` directory to launch a bunch of lightweight busybox instances to see how well the plugin scales for you.
-
-5. The default macvlan mode is `bridge`. This works much like traditional vlans where a ToR switch or some other router would be the gateway in a data center. Currently, in order to have two subnets talk to one another it requires an L3 router. This is typical in the vast majority of DCs today. Again, this is just early, more to come and tons of ways to help if interested.
-
- **Additional Notes**:
- - The argument passed to `--default-network` the plugin is identified via `macvlan`. More specifically, the socket file that currently defaults to `/usr/share/docker/plugins/macvlan.sock`. If the filepath does not exist at runtime it will be created.
- - There are default values attached to each flag since a big reason for this project is to help folks learn the libnetwork plugins.
- - The containers are brought up on a flat bridge. This means there is no NATing occurring. A layer 2 adjacency such as a VLAN or overlay tunnel is required for multi-host communications. If the traffic needs to be routed an external process to act as a gateway.
- - Download a quick macvlan video recording [here](https://www.dropbox.com/s/w0gts0kjs580k78/Macvlan-demo.mp4?dl=1).
- - Since this plugin uses netlink, a Linux host that can build [vishvananda/netlink](https://github.com/vishvananda/netlink) library is required.
-
-### Example Output:
-
-
-    ```
-    ip addr show eth1
-    3: eth1: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc pfifo_fast state UP group default qlen 1000
-         link/ether 00:0c:29:c7:a0:3c brd ff:ff:ff:ff:ff:ff
-         inet 192.168.1.254/24 brd 192.168.1.255 scope global eth1
-    ```
-
- - Start Docker `docker -d -D --default-network=macvlan:foo`
- - Start macvlan-plugin-docker either using `go run main.go` or run the included binary `/macvlan-docker-plugin` in the binaries directory.
-
-
- - Container output (**note:** since this is a flat single host L2 deployment, the subnet gateway is an external router of `192.168.1.1`):
-
-    ```
-    docker run -i -t --rm busybox
-    $ ifconfig eth0
-    eth0      Link encap:Ethernet  HWaddr 72:3A:D8:99:30:A8
-           inet addr:192.168.1.2  Bcast:0.0.0.0  Mask:255.255.255.0
-           UP BROADCAST RUNNING MULTICAST  MTU:1500  Metric:1
-           RX packets:1 errors:0 dropped:0 overruns:0 frame:0
-           TX packets:7 errors:0 dropped:0 overruns:0 carrier:0
-           collisions:0 txqueuelen:0
-           RX bytes:60 (60.0 B)  TX bytes:578 (578.0 B)
-
-    $ ip route
-    default via 192.168.1.1 dev eth0
-    192.168.1.0/24 dev eth0  proto kernel  scope link  src 192.168.1.2
-
-    / # ping 8.8.8.8
-    PING 8.8.8.8 (8.8.8.8): 56 data bytes
-    64 bytes from 8.8.8.8: seq=0 ttl=53 time=23.957 ms
-    ^C
-    --- 8.8.8.8 ping statistics ---
-    1 packets transmitted, 1 packets received, 0% packet loss
-    round-trip min/avg/max = 23.957/23.957/23.957 ms
-    exit
-    ```
-
- - The driver output will look something like the following as a container is created and then removed:
-
-    ```
-    # The following are all the default values.
-    # If you were to only run: go run main.go -d
-    # It would be the same values as below. On almost
-    # all cases you would define a subnet and gateway that
-    # fit into the network you are plugging into.
-    go run main.go -d --gateway=192.168.1.1 --bridge-subnet=192.168.1.0/24 -mode=bridge
-    INFO[0000] Macvlan network driver initialized successfully
-    INFO[0002] The allocated container IP is: [ 192.168.1.2 ]
-    INFO[0002] Created Macvlan port: [ c78c9 ] using the mode: [ bridge ]
-    INFO[0902] Removing unused macvlan link [ c78c9 ] from the removed container
-    ```
-
-- As you are hacking, if you run into a scenario where you feel as if you have stale namespaces that are not getting GC'ed you can manually cleanup the netns with the following. An example would be if you `control^c` three times and sent a SIGQUIT rather then waiting on a single `control^c` and the `SIGINT` allowing the process to cleaning shutdown.
-
-    ```
-    $ umount /var/run/docker/netns/*
-    $ rm /var/run/docker/netns/*
-    ```
-
-### Hacking and Contributing
-
-Yes!! This is a purely community project by folks hacking in their free time to provide references for plugging in to Docker via libnetwork remote APIs along with simple deployments for the array of common network architectures deployed in existing data centers today. Please see issues for todos or add todos you would like to add or that we can help you get accomplished if you are new to Docker, Go, networks or programming. This is an excting place and time to evolve with the community. The only rule here is no jerks :)
-
-Use [Godep](https://github.com/tools/godep) for dependencies. There is a godbus version that conflicts with vish netlink listed below.
+Use [Godep](https://github.com/tools/godep) for dependencies.
 
 Install and use Godep with the following:
 
@@ -130,9 +111,28 @@ $ go get github.com/tools/godep
 $ godep restore
 ```
 
-The version of [godbus/dbus](https://github.com/godbus/dbus) has issues with [vishvananda/netlink](https://github.com/vishvananda/netlink) that will lead to this error at build time:
+ There is a `godbus/dbus` version that conflicts with `vishvananda/netlink` that will lead to this error at build time. This can appear as libnetwork issues when in fact it is 3rd party drivers. Libnetwork also uses Godep for versioning so using those versions would be just as good or even better if keeping with the latest experimental nightly Docker builds:
+
+Example of the godbus error:
 
 ```
 ../../../docker/libnetwork/iptables/firewalld.go:75: cannot use c.sysconn.Object(dbusInterface, dbus.ObjectPath(dbusPath)) (type dbus.BusObject) as type *dbus.
 Object in assignment: need type assertion
+```
+
+- If you dont want to use godep @Orivej graciously pointed out the godbus dependency in issue #5:
+
+"You need a stable godbus that you can probably get with:"
+```
+cd $GOPATH/src/github.com/godbus/dbus
+git checkout v2
+```
+
+ - Another option would be to use godep and sync your library with libnetworks.
+
+```
+go get github.com/tools/godep
+git clone https://github.com/docker/libnetwork.git
+cd libnetwork
+godep restore
 ```

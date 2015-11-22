@@ -3,14 +3,12 @@ package macvlan
 import (
 	"encoding/json"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
-	"strings"
 
 	log "github.com/Sirupsen/logrus"
 	"github.com/codegangsta/cli"
-	"github.com/docker/libnetwork/ipallocator"
+	"github.com/docker/libnetwork/driverapi"
 	"github.com/gorilla/mux"
 	"github.com/samalba/dockerclient"
 	"github.com/vishvananda/netlink"
@@ -39,11 +37,11 @@ type bridgeOpts struct {
 type driver struct {
 	dockerer
 	pluginConfig
-	ipAllocator *ipallocator.IPAllocator
-	version     string
-	network     string
-	cidr        *net.IPNet
-	nameserver  string
+	//	ipAllocator *ipallocator.IPAllocator
+	version    string
+	network    string
+	cidr       *net.IPNet
+	nameserver string
 }
 
 // Struct for binding plugin specific configurations (cli.go for details).
@@ -122,13 +120,11 @@ func New(version string, ctx *cli.Context) (Driver, error) {
 	// Leaving as info for now to stdout the plugin config
 	log.Infof("Plugin configuration options are: \n %s", pluginOpts)
 
-	ipAllocator := ipallocator.New()
+	//	ipAllocator := ipallocator.New()
 	d := &driver{
 		dockerer: dockerer{
 			client: docker,
 		},
-		ipAllocator:  ipAllocator,
-		version:      version,
 		pluginConfig: *pluginOpts,
 	}
 	return d, nil
@@ -138,7 +134,6 @@ func (driver *driver) Listen(socket string) error {
 	router := mux.NewRouter()
 	router.NotFoundHandler = http.HandlerFunc(notFound)
 
-	router.Methods("GET").Path("/status").HandlerFunc(driver.status)
 	router.Methods("POST").Path("/Plugin.Activate").HandlerFunc(driver.handshake)
 	router.Methods("POST").Path("/NetworkDriver.GetCapabilities").HandlerFunc(driver.capabilities)
 
@@ -224,13 +219,11 @@ func (driver *driver) capabilities(w http.ResponseWriter, r *http.Request) {
 	log.Debug("Capabilities exchange complete")
 }
 
-func (driver *driver) status(w http.ResponseWriter, r *http.Request) {
-	io.WriteString(w, fmt.Sprintln("macvlan plugin", driver.version))
-}
-
 type networkCreate struct {
 	NetworkID string
 	Options   map[string]interface{}
+	IpV4Data  []driverapi.IPAMData
+	ipV6Data  []driverapi.IPAMData
 }
 
 func (driver *driver) createNetwork(w http.ResponseWriter, r *http.Request) {
@@ -253,7 +246,6 @@ func (driver *driver) createNetwork(w http.ResponseWriter, r *http.Request) {
 		log.Warnf("Error parsing cidr from the default subnet: %s", err)
 	}
 	driver.cidr = ipNet
-	driver.ipAllocator.RequestIP(ipNet, nil)
 	emptyResponse(w)
 }
 
@@ -317,27 +309,21 @@ func (driver *driver) createEndpoint(w http.ResponseWriter, r *http.Request) {
 		errorResponsef(w, "No such network %s", netID)
 		return
 	}
-	log.Debugf("The container subnet for this context is [ %s ]", driver.pluginConfig.containerSubnet.String())
+
+	log.Debugf("The container subnet for this context is [ %s ]", create.Interface.Address)
 	// Request an IP address from libnetwork based on the cidr scope
 	// TODO: Add a user defined static ip addr option
-	allocatedIP, err := driver.ipAllocator.RequestIP(driver.cidr, nil)
-	if err != nil || allocatedIP == nil {
-		log.Errorf("Unable to obtain an IP address from libnetwork ipam: %s", err)
-		errorResponsef(w, "%s", err)
+	containerAddress := create.Interface.Address
+	if containerAddress == "" {
+		log.Errorf("Unable to obtain an IP address from libnetwork default ipam")
 		return
 	}
-
 	// generate a mac address for the pending container
-	mac := makeMac(allocatedIP)
-
-	// Have to convert container IP to a string ip/mask format
-	bridgeMask := strings.Split(driver.cidr.String(), "/")
-	containerAddress := allocatedIP.String() + "/" + bridgeMask[1]
+	mac := makeMac(net.ParseIP(containerAddress))
 
 	log.Infof("Allocated container IP: [ %s ]", containerAddress)
-
+	// IP addrs comes from libnetwork ipam via user 'docker network' parameters
 	respIface := &EndpointInterface{
-		Address:    containerAddress,
 		MacAddress: mac,
 	}
 	resp := &endpointResponse{
@@ -365,10 +351,7 @@ func (driver *driver) deleteEndpoint(w http.ResponseWriter, r *http.Request) {
 	if driver.cidr == nil {
 		return
 	}
-	// ReleaseIP releases an ip back to a network
-	if err := driver.ipAllocator.ReleaseIP(driver.cidr, driver.cidr.IP); err != nil {
-		log.Warnf("Error releasing IP: %s", err)
-	}
+
 	log.Debugf("Delete endpoint %s", delete.EndpointID)
 
 	containerLink := delete.EndpointID[:5]
@@ -377,6 +360,7 @@ func (driver *driver) deleteEndpoint(w http.ResponseWriter, r *http.Request) {
 		log.Errorf("The requested interface to delete [ %s ] was not found on the host.", containerLink)
 		return
 	}
+	// Get the link handle
 	link, err := netlink.LinkByName(containerLink)
 	if err != nil {
 		log.Errorf("Error looking up link [ %s ] object: [ %v ] error: [ %s ]", link.Attrs().Name, link, err)
