@@ -55,19 +55,15 @@ In the repo directory, use the binary named `macvlan-docker-plugin-0.2-Linux-x86
 ```
 $ git clone https://github.com/gopher-net/macvlan-docker-plugin.git
 $ cd macvlan-docker-plugin/binaries
-$ ./macvlan-docker-plugin-0.2-Linux-x86_64 -d --host-interface=eth1 --mode=bridge
+$ ./macvlan-docker-plugin-0.2-Linux-x86_64 -d
 
 # -d is debug
-# --host-interface is the master interface, eth0, eth1 etc. The docker network create needs to correspond to that subnet for bridge mode
 ```
 
 **3.** Create a network with Docker
 
 **Note** the subnet needs to correspond to the master interface.  In this example, the nic `eth1` is attached to a subnet `192.168.1.0/24`. The container needs to be on the same *broadast domain* as the default gateway. In this case it is a router with the address of `192.168.1.1`.
 
-*TODO is to honor the Docker opts that will enable multiple master interfaces for
-subinterfaces and other ethX interfaces at once. Opts from Docker network are parsed, just not honored. Adding that to a native driver into
-libnetwork will be easier and more likely then anyone doing it here.*
 
 ```
 $ docker network create -d macvlan --subnet=192.168.1.0/24 --gateway=192.168.1.1 -o host_iface=eth1 net1
