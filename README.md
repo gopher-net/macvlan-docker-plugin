@@ -35,6 +35,8 @@ distribution repo or docker repos.
 
 ### Macvlan Bridge Mode Instructions
 
+This example is also available in a [screencast on youtube](https://www.youtube.com/watch?v=IMOelqPzFtk).
+
 **1.** Start Docker with the following or simply start the service. Version 1.9+ is required.
 
 ```
@@ -63,7 +65,6 @@ $ ./macvlan-docker-plugin-0.2-Linux-x86_64 -d
 **3.** Create a network with Docker
 
 **Note** the subnet needs to correspond to the master interface.  In this example, the nic `eth1` is attached to a subnet `192.168.1.0/24`. The container needs to be on the same *broadast domain* as the default gateway. In this case it is a router with the address of `192.168.1.1`.
-
 
 ```
 $ docker network create -d macvlan --subnet=192.168.1.0/24 --gateway=192.168.1.1 -o host_iface=eth1 net1
@@ -94,7 +95,7 @@ Docker networks are now persistant after a reboot. To remove all of the network 
 To run the plugin via Go for hacking simply run go with the `main.go` entry point and desired parameters. The same applies to the [gopher-net/ipvlan](https://github.com/gopher-net/ipvlan-docker-plugin) driver:
 
 ```
-go run main.go -d --host-interface=eth1 --mode=bridge
+go run main.go -d
 ```
 
 Use [Godep](https://github.com/tools/godep) for dependencies.
