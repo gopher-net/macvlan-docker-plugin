@@ -1,4 +1,4 @@
-ipvlan-docker-plugin
+macvlan-docker-plugin
 =================
 
 This repo is for examples of a plugin w/ libnetwork and temporary until we get Ipvlan/Macvlan native driver support in Docker which will be
@@ -37,7 +37,7 @@ distribution repo or docker repos.
 
 This example is also available in a [screencast on youtube](https://www.youtube.com/watch?v=IMOelqPzFtk).
 
-**1.** Start Docker with the following or simply start the service. Version 1.9+ is required.
+**1.** Start Docker with the following or simply start the service. Version 1.9+ is required for 3rd party external network plugins.
 
 ```
 $ docker -v
@@ -52,19 +52,21 @@ $ docker daemon -D
 - *Note:* The host-interface flag is the Docker host's eth interface. It shouldnt be required for the driver but this is a bit lazy and isnt
 honoring docker network opts yet.
 
-In the repo directory, use the binary named `macvlan-docker-plugin-0.2-Linux-x86_64`. Feel free to rename it :)
+In the repo directory, use the binary named `macvlan-docker-plugin-0.3-Linux-x86_64`. Feel free to rename it :)
 
 ```
 $ git clone https://github.com/gopher-net/macvlan-docker-plugin.git
 $ cd macvlan-docker-plugin/binaries
-$ ./macvlan-docker-plugin-0.2-Linux-x86_64 -d
+$ ./macvlan-docker-plugin-0.3-Linux-x86_64 -d --host-interface=eth1 --mode=bridge
 
 # -d is debug
+# --host-interface is the master interface, eth0, eth1 etc. The docker network create needs to correspond to that subnet for bridge mode
 ```
 
 **3.** Create a network with Docker
 
 **Note** the subnet needs to correspond to the master interface.  In this example, the nic `eth1` is attached to a subnet `192.168.1.0/24`. The container needs to be on the same *broadast domain* as the default gateway. In this case it is a router with the address of `192.168.1.1`.
+
 
 ```
 $ docker network create -d macvlan --subnet=192.168.1.0/24 --gateway=192.168.1.1 -o host_iface=eth1 net1
@@ -75,10 +77,50 @@ $ docker network create -d macvlan --subnet=192.168.1.0/24 --gateway=192.168.1.1
  Run some containers, specify the network and verify they can ping one another
 
 ```
-$ docker run --net=net1 -it --rm ubuntu
+$ docker run --net=net1 -it --rm debian
 ```
 
-Docker networks are now persistant after a reboot. To remove all of the network configs on a docker daemon restart you can simply delete the directory with: `rm  /var/lib/docker/network/files/*`
+Docker networks are now persistant after a reboot. The plugin does not currently support dealing with unknown networks. That is a priority next. To remove all of the network configs on a docker daemon restart you can simply delete the directory with: `rm  /var/lib/docker/network/files/*`
+
+
+### 802.1q Trunks with MacVlan
+
+**Note** Containers using the **same** parent interface e.g. `eth1.20` can reach one another without an external router (intra-vlan). Containers on different VLANs/parent interfaces can not reach one another without an external router (inter-vlan).
+
+### Vlan ID 20
+
+```
+# create a new subinterface tied to dot1q vlan 20
+   ip link add link eth1 name eth1.20 type vlan id 20
+
+# enable the new sub-interface
+   ip link set eth1.20 up
+
+# now add networks and hosts as you would normally by attaching to the master (sub)interface that is tagged
+   docker network  create  -d macvlan  --subnet=192.168.20.0/24 --gateway=192.168.20.1 -o host_iface=eth1.20 macvlan20
+   docker run --net=macvlan20 -it --name mcv_test1 --rm debian
+   docker run --net=macvlan20 -it --name mcv_test2 --rm debian
+
+# mcv_test1 should be able to ping mcv_test2 now.
+```
+
+### Vlan ID 30
+
+```
+# create a new subinterface tied to dot1q vlan 30
+   ip link add link eth1 name eth1.30 type vlan id 30
+
+# enable the new sub-interface
+   ip link set eth1.30 up
+
+# now add networks and hosts as you would normally by attaching to the master (sub)interface that is tagged
+   docker network  create  -d macvlan  --subnet=192.168.30.0/24 --gateway=192.168.30.1 -o host_iface=eth1.30 macvlan30
+   docker run --net=macvlan30 -it --name mcv_test3 --rm debian
+   docker run --net=macvlan30 -it --name mcv_test4 --rm debian
+
+# mcv_test3 should be able to ping mcv_test4 now.
+```
+
 
 ### Notes and General Macvlan Caveats
 
@@ -92,7 +134,7 @@ Docker networks are now persistant after a reboot. To remove all of the network 
 
 ### Dev and issues
 
-To run the plugin via Go for hacking simply run go with the `main.go` entry point and desired parameters. The same applies to the [gopher-net/ipvlan](https://github.com/gopher-net/ipvlan-docker-plugin) driver:
+To run the plugin via Go for hacking simply run go with the `main.go`. The same applies to the [gopher-net/ipvlan](https://github.com/gopher-net/ipvlan-docker-plugin) driver:
 
 ```
 go run main.go -d
