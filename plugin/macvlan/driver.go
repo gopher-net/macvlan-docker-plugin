@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"sync"
 
 	log "github.com/Sirupsen/logrus"
 	"github.com/codegangsta/cli"
@@ -17,7 +18,6 @@ import (
 const (
 	MethodReceiver       = "NetworkDriver"
 	bridgeMode           = "bridge"
-	defaultRoute         = "0.0.0.0/0"
 	containerIfacePrefix = "eth"
 	defaultMTU           = 1500
 	minMTU               = 68
@@ -27,47 +27,27 @@ type Driver interface {
 	Listen(string) error
 }
 
-// Struct for binding bridge options CLI flags
-type bridgeOpts struct {
-	brName   string
-	brSubnet net.IPNet
-	brIP     net.IPNet
-}
-
 type driver struct {
 	dockerer
-	pluginConfig
-	//	ipAllocator *ipallocator.IPAllocator
-	version    string
-	network    string
-	cidr       *net.IPNet
+	networks   networkTable
 	nameserver string
+	sync.Mutex
 }
 
-// Struct for binding plugin specific configurations (cli.go for details).
-type pluginConfig struct {
-	mtu             int
-	mode            string
-	hostIface       string
-	containerSubnet *net.IPNet
-	gatewayIP       net.IP
+type endpoint struct {
+	id      string
+	mac     net.HardwareAddr
+	addr    *net.IPNet
+	srcName string
 }
+
+type endpointTable map[string]*endpoint
 
 func New(version string, ctx *cli.Context) (Driver, error) {
 	docker, err := dockerclient.NewDockerClient("unix:///var/run/docker.sock", nil)
 	if err != nil {
 		return nil, fmt.Errorf("could not connect to docker: %s", err)
 	}
-	if ctx.String("host-interface") == "" {
-		log.Fatalf("Required flag [ host-interface ] that is used for off box communication was not defined. Example: --host-interface=eth1")
-	}
-
-	// bind CLI opts to the user config struct
-	if ok := validateHostIface(ctx.String("host-interface")); !ok {
-		log.Fatalf("Requird field [ host-interface ] ethernet interface [ %s ] was not found. Exiting since this is required for both l2 and l3 modes.", ctx.String("host-interface"))
-	}
-	macvlanEthIface = ctx.String("host-interface")
-
 	// lower bound of v4 MTU is 68-bytes per rfc791
 	if ctx.Int("mtu") <= 0 {
 		cliMTU = cliMTU
@@ -76,14 +56,6 @@ func New(version string, ctx *cli.Context) (Driver, error) {
 	} else {
 		log.Fatalf("The MTU value passed [ %d ] must be greater than [ %d ] bytes per rfc791", ctx.Int("mtu"), minMTU)
 	}
-
-	// Parse the container IP subnet and network addr to be used to guess the gateway if necessary
-	defaultSubnet = ctx.String("macvlan-subnet")
-	containerGW, containerNet, err := net.ParseCIDR(ctx.String("macvlan-subnet"))
-	if err != nil {
-		log.Fatalf("Error parsing cidr from the subnet flag provided [ %s ]: %s", ctx.String("macvlan-subnet"), err)
-	}
-
 	// Set the default mode to bridge
 	if ctx.String("mode") == "" {
 		macvlanMode = bridgeMode
@@ -92,40 +64,12 @@ func New(version string, ctx *cli.Context) (Driver, error) {
 	case bridgeMode:
 		macvlanMode = bridgeMode
 		// todo: in other modes if relevant
-	default:
-		log.Fatalf("Invalid macvlan mode supplied [ %s ] we currently only support [ %s ] mode. If mode is left empty, bridge is the default mode.", ctx.String("mode"), macvlanMode)
 	}
-
-	// if no gateway was passed, use the first valid addr on the container subnet
-	if ctx.String("gateway") != "" {
-		// bind the container gateway to the IP passed from the CLI
-		cliGateway := net.ParseIP(ctx.String("gateway"))
-		if err != nil {
-			log.Fatalf("The IP passed with the [ gateway ] flag [ %s ] was not a valid address: %s", ctx.String("gateway"), err)
-		}
-		containerGW = cliGateway
-	} else {
-		containerGW = ipIncrement(containerGW)
-	}
-
-	gatewayIP = containerGW.String()
-
-	pluginOpts := &pluginConfig{
-		mtu:             cliMTU,
-		mode:            macvlanMode,
-		containerSubnet: containerNet,
-		gatewayIP:       containerGW,
-		hostIface:       macvlanEthIface,
-	}
-	// Leaving as info for now to stdout the plugin config
-	log.Infof("Plugin configuration options are: \n %s", pluginOpts)
-
-	//	ipAllocator := ipallocator.New()
 	d := &driver{
+		networks: networkTable{},
 		dockerer: dockerer{
 			client: docker,
 		},
-		pluginConfig: *pluginOpts,
 	}
 	return d, nil
 }
@@ -233,19 +177,34 @@ func (driver *driver) createNetwork(w http.ResponseWriter, r *http.Request) {
 		sendError(w, "Unable to decode JSON payload: "+err.Error(), http.StatusBadRequest)
 		return
 	}
-
-	if driver.network != "" {
-		errorResponsef(w, "You get just one network, and you already made %s", driver.network)
-		return
+	var netCidr *net.IPNet
+	var netGw string
+	log.Debugf("Network Create Called: [ %+v ]", create)
+	for _, v4 := range create.IpV4Data {
+		netGw = v4.Gateway.IP.String()
+		netCidr = v4.Pool
 	}
-	driver.network = create.NetworkID
-
-	// Parse the network address from the user supplied or default container network
-	_, ipNet, err := net.ParseCIDR(defaultSubnet)
-	if err != nil {
-		log.Warnf("Error parsing cidr from the default subnet: %s", err)
+	n := &network{
+		id:        create.NetworkID,
+		endpoints: endpointTable{},
+		cidr:      netCidr,
+		gateway:   netGw,
 	}
-	driver.cidr = ipNet
+	// Parse docker network -o opts
+	for k, v := range create.Options {
+		if k == "com.docker.network.generic" {
+			if genericOpts, ok := v.(map[string]interface{}); ok {
+				for key, val := range genericOpts {
+					log.Debugf("Libnetwork Opts Sent: [ %s ] Value: [ %s ]", key, val)
+					// Parse -o host_iface from libnetwork generic opts
+					if key == "host_iface" {
+						n.ifaceOpt = val.(string)
+					}
+				}
+			}
+		}
+	}
+	driver.addNetwork(n)
 	emptyResponse(w)
 }
 
@@ -255,19 +214,13 @@ type networkDelete struct {
 
 func (driver *driver) deleteNetwork(w http.ResponseWriter, r *http.Request) {
 	var delete networkDelete
+	nid := delete.NetworkID
 	if err := json.NewDecoder(r.Body).Decode(&delete); err != nil {
 		sendError(w, "Unable to decode JSON payload: "+err.Error(), http.StatusBadRequest)
 		return
 	}
 	log.Debugf("Delete network request: %+v", &delete)
-	if delete.NetworkID != driver.network {
-		log.Debugf("network not found: %+v", &delete)
-		errorResponsef(w, "Network %s not found", delete.NetworkID)
-		return
-	}
-	driver.network = ""
-	emptyResponse(w)
-	log.Infof("Destroy network %s", delete.NetworkID)
+	driver.delNetwork(nid)
 }
 
 type endpointCreate struct {
@@ -300,19 +253,10 @@ func (driver *driver) createEndpoint(w http.ResponseWriter, r *http.Request) {
 		sendError(w, "Unable to decode JSON payload: "+err.Error(), http.StatusBadRequest)
 		return
 	}
-
-	netID := create.NetworkID
 	endID := create.EndpointID
-
-	if netID != driver.network {
-		log.Warnf("Network not found, [ %s ]", netID)
-		errorResponsef(w, "No such network %s", netID)
-		return
-	}
-
 	log.Debugf("The container subnet for this context is [ %s ]", create.Interface.Address)
 	// Request an IP address from libnetwork based on the cidr scope
-	// TODO: Add a user defined static ip addr option
+	// TODO: Add a user defined static ip addr option in Docker v1.10
 	containerAddress := create.Interface.Address
 	if containerAddress == "" {
 		log.Errorf("Unable to obtain an IP address from libnetwork default ipam")
@@ -347,11 +291,7 @@ func (driver *driver) deleteEndpoint(w http.ResponseWriter, r *http.Request) {
 	}
 	log.Debugf("Delete endpoint request: %+v", &delete)
 	emptyResponse(w)
-	// null check cidr in case driver restarted and doesn't know the network to avoid panic
-	if driver.cidr == nil {
-		return
-	}
-
+	//TODO: null check cidr in case driver restarted and doesn't know the network to avoid panic
 	log.Debugf("Delete endpoint %s", delete.EndpointID)
 
 	containerLink := delete.EndpointID[:5]
@@ -412,64 +352,79 @@ type staticRoute struct {
 }
 
 type joinResponse struct {
-	Gateway       string
-	InterfaceName InterfaceName
-	StaticRoutes  []*staticRoute
+	Gateway               string
+	InterfaceName         InterfaceName
+	StaticRoutes          []*staticRoute
+	DisableGatewayService bool
 }
 
 func (driver *driver) joinEndpoint(w http.ResponseWriter, r *http.Request) {
+
 	var j join
 	if err := json.NewDecoder(r.Body).Decode(&j); err != nil {
 		sendError(w, "Could not decode JSON encode payload", http.StatusBadRequest)
 		return
 	}
 	log.Debugf("Join request: %+v", &j)
-
+	getID, err := driver.getNetwork(j.NetworkID)
+	if err != nil {
+		log.Errorf("error getting network ID mode [ %s ]: %v", j.NetworkID, err)
+	}
 	endID := j.EndpointID
 	// unique name while still on the common netns
 	preMoveName := endID[:5]
-	mode, err := setVlanMode(macvlanMode)
+	res := &joinResponse{}
+	mode, err := setVlanMode("bridge")
 	if err != nil {
-		log.Errorf("error parsing vlan mode [ %v ]: %s", mode, err)
+		log.Errorf("error getting vlan mode [ %v ]: %s", mode, err)
+		return
+	}
+	if getID.ifaceOpt == "" {
+		log.Error("Required macvlan parent interface is missing, please recreate the network specifying the host_iface")
 		return
 	}
 	// Get the link for the master index (Example: the docker host eth iface)
-	hostEth, err := netlink.LinkByName(macvlanEthIface)
+	hostEth, err := netlink.LinkByName(getID.ifaceOpt)
 	if err != nil {
-		log.Warnf("Error looking up the parent iface [ %s ] mode: [ %s ] error: [ %s ]", macvlanEthIface, mode, err)
+		log.Warnf("Error looking up the parent iface [ %s ] error: [ %s ]", getID.ifaceOpt, err)
 	}
-	macvlan := &netlink.Macvlan{
+	mvlan := &netlink.Macvlan{
 		LinkAttrs: netlink.LinkAttrs{
 			Name:        preMoveName,
 			ParentIndex: hostEth.Attrs().Index,
 		},
 		Mode: mode,
 	}
-	if err := netlink.LinkAdd(macvlan); err != nil {
-		log.Errorf("failed to create Macvlan: [ %v ] with the error: %s", macvlan, err)
-		log.Error("Ensure there are no existing [ ipvlan ] type links and remove with 'ip link del <link_name>'," +
-			" also check `/var/run/docker/netns/` for orphaned links to unmount and delete, then restart the plugin")
-		return
+	if err := netlink.LinkAdd(mvlan); err != nil {
+		log.Warnf("Failed to create the netlink link: [ %v ] with the "+
+			"error: %s Note: a parent index cannot be link to both macvlan "+
+			"and macvlan simultaneously. A new parent index is required", mvlan, err)
+		log.Warnf("Also check `/var/run/docker/netns/` for orphaned links to unmount and delete, then restart the plugin")
+		log.Warnf("Run this to clean orphaned links 'umount /var/run/docker/netns/* && rm /var/run/docker/netns/*'")
 	}
-	log.Infof("Created Macvlan port: [ %s ] using the mode: [ %s ]", macvlan.Name, macvlanMode)
 	// Set the netlink iface MTU, default is 1500
-	if err := netlink.LinkSetMTU(macvlan, defaultMTU); err != nil {
-		log.Errorf("Error setting the MTU [ %d ] for link [ %s ]: %s", defaultMTU, macvlan.Name, err)
+	if err := netlink.LinkSetMTU(mvlan, defaultMTU); err != nil {
+		log.Errorf("Error setting the MTU [ %d ] for link [ %s ]: %s", defaultMTU, mvlan.Name, err)
 	}
 	// Bring the netlink iface up
-	if err := netlink.LinkSetUp(macvlan); err != nil {
-		log.Warnf("failed to enable the [ macvlan ] netlink link: [ %v ]", macvlan, err)
+	if err := netlink.LinkSetUp(mvlan); err != nil {
+		log.Warnf("failed to enable the macvlan netlink link: [ %v ]", mvlan, err)
 	}
 	// SrcName gets renamed to DstPrefix on the container iface
 	ifname := &InterfaceName{
-		SrcName:   macvlan.Name,
+		SrcName:   mvlan.Name,
 		DstPrefix: containerIfacePrefix,
 	}
-	res := &joinResponse{
-		InterfaceName: *ifname,
-		Gateway:       gatewayIP,
+
+	res = &joinResponse{
+		InterfaceName:         *ifname,
+		Gateway:               getID.gateway,
+		DisableGatewayService: true,
 	}
-	objectResponse(w, res)
+	defer objectResponse(w, res)
+	log.Debugf("Join response: %+v", res)
+	// Send the response to libnetwork
+	//	objectResponse(w, res)
 	log.Debugf("Join endpoint %s:%s to %s", j.NetworkID, j.EndpointID, j.SandboxKey)
 }
 
@@ -488,14 +443,4 @@ func (driver *driver) leaveEndpoint(w http.ResponseWriter, r *http.Request) {
 	log.Debugf("Leave request: %+v", &l)
 	emptyResponse(w)
 	log.Debugf("Leave %s:%s", l.NetworkID, l.EndpointID)
-}
-
-// return string representation of user options in pluginConfig for debugging
-func (d *pluginConfig) String() string {
-	str := fmt.Sprintf(" container subnet: [%s],\n", d.containerSubnet.String())
-	str = str + fmt.Sprintf("  container gateway: [%s],\n", d.gatewayIP.String())
-	str = str + fmt.Sprintf("  host interface: [%s],\n", d.hostIface)
-	str = str + fmt.Sprintf("  mmtu: [%d],\n", d.mtu)
-	str = str + fmt.Sprintf("  macvlan mode: [%s]", d.mode)
-	return str
 }

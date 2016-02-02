@@ -33,10 +33,6 @@ func main() {
 	app.Flags = []cli.Flag{
 		flagDebug,
 		flagSocket,
-		macvlan.FlagMacvlanMode,
-		macvlan.FlagGateway,
-		macvlan.FlagBridgeSubnet,
-		macvlan.FlagMacvlanEth,
 	}
 	app.Before = initEnv
 	app.Action = Run
