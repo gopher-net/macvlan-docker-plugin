@@ -37,6 +37,8 @@ distribution repo or docker repos.
 
 This example is also available in a [screencast on youtube](https://www.youtube.com/watch?v=IMOelqPzFtk).
 
+To see verbose output please see this [gist](https://gist.github.com/nerdalert/37c251dd262eb55d616c).
+
 **1.** Start Docker with the following or simply start the service. Version 1.9+ is required for 3rd party external network plugins.
 
 ```
