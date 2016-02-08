@@ -71,8 +71,6 @@ func New(version string, ctx *cli.Context) (Driver, error) {
 			client: docker,
 		},
 	}
-	// Init any existing libnetwork networks
-	d.existingNetChecks()
 	return d, nil
 }
 
@@ -410,7 +408,13 @@ func (driver *driver) joinEndpoint(w http.ResponseWriter, r *http.Request) {
 	log.Debugf("Join request: %+v", &j)
 	getID, err := driver.getNetwork(j.NetworkID)
 	if err != nil {
-		log.Errorf("error getting network ID mode [ %s ]: %v", j.NetworkID, err)
+		// Init any existing libnetwork networks
+		driver.existingNetChecks()
+
+		getID, err = driver.getNetwork(j.NetworkID)
+		if err != nil {
+			log.Errorf("error getting network ID [ %s ]. Run 'docker network ls' or 'docker network create' Err: %v", j.NetworkID, err)
+		}
 	}
 	endID := j.EndpointID
 	// unique name while still on the common netns
