@@ -37,6 +37,7 @@ func getIfaceAddr(name string) (*net.IPNet, error) {
 	return addrs[0].IPNet, nil
 }
 
+// setVlanMode set the macvlan mode, currently only bridge is supported since others are rarely deployed
 func setVlanMode(mode string) (netlink.MacvlanMode, error) {
 	switch mode {
 	case "private":
@@ -75,4 +76,13 @@ func validateHostIface(ifaceStr string) bool {
 		return false
 	}
 	return true
+}
+
+// parseIPNet returns a net.IP from a network cidr in string representation
+func parseIPNet(s string) (*net.IPNet, error) {
+	ip, ipNet, err := net.ParseCIDR(s)
+	if err != nil {
+		return nil, err
+	}
+	return &net.IPNet{IP: ip, Mask: ipNet.Mask}, nil
 }

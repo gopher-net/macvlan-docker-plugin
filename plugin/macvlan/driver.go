@@ -71,9 +71,12 @@ func New(version string, ctx *cli.Context) (Driver, error) {
 			client: docker,
 		},
 	}
+	// Init any existing libnetwork networks
+	d.existingNetChecks()
 	return d, nil
 }
 
+// Listen for callbacks on socket file handle /var/run/docker/plugins/macvlan.sock
 func (driver *driver) Listen(socket string) error {
 	router := mux.NewRouter()
 	router.NotFoundHandler = http.HandlerFunc(notFound)
@@ -161,6 +164,45 @@ func (driver *driver) capabilities(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	log.Debug("Capabilities exchange complete")
+}
+
+// existingNetChecks checks for networks that already exist in libnetwork cache
+func (driver *driver) existingNetChecks() {
+	// Request all networks on the endpoint without any filters
+	existingNets, err := driver.client.ListNetworks("")
+	if err != nil {
+		log.Errorf("unable to retrieve existing networks: %v", err)
+	}
+	var netCidr *net.IPNet
+	var netGW string
+	for _, n := range existingNets {
+		// Exclude the default network names
+		if n.Name != "" && n.Name != "none" && n.Name != "host" && n.Name != "bridge" {
+			for _, v4 := range n.IPAM.Config {
+				netGW = v4.Gateway
+				netCidr, err = parseIPNet(v4.Subnet)
+				if err != nil {
+					log.Errorf("invalid cidr address in network [ %s ]: %v", v4.Subnet, err)
+				}
+			}
+			nw := &network{
+				id:        n.ID,
+				endpoints: endpointTable{},
+				cidr:      netCidr,
+				gateway:   netGW,
+			}
+			// Parse docker network -o opts
+			for k, v := range n.Options {
+				// Infer a macvlan network from required option
+				if k == "host_iface" {
+					nw.ifaceOpt = v
+					log.Debugf("Existing macvlan network exists: [Name:%s, Cidr:%s, Gateway:%s, Master Iface:%s]",
+						n.Name, netCidr.String(), netGW, nw.ifaceOpt)
+					driver.addNetwork(nw)
+				}
+			}
+		}
+	}
 }
 
 type networkCreate struct {
@@ -380,7 +422,7 @@ func (driver *driver) joinEndpoint(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if getID.ifaceOpt == "" {
-		log.Error("Required macvlan parent interface is missing, please recreate the network specifying the host_iface")
+		log.Error("Required macvlan parent interface is missing, please recreate the network specifying the -o host_iface=ethX")
 		return
 	}
 	// Get the link for the master index (Example: the docker host eth iface)
