@@ -56,10 +56,12 @@ honoring docker network opts yet.
 
 In the repo directory, use the binary named `macvlan-docker-plugin-0.3-Linux-x86_64`. Feel free to rename it :)
 
+**Note**: There is no need to add any paramters to the plugin daemon (other then `-d` debug for example). All options are passed via native Docker commands.
+
 ```
 $ git clone https://github.com/gopher-net/macvlan-docker-plugin.git
 $ cd macvlan-docker-plugin/binaries
-$ ./macvlan-docker-plugin-0.3-Linux-x86_64 -d --host-interface=eth1 --mode=bridge
+$ ./macvlan-docker-plugin-0.3-Linux-x86_64 -d
 
 # -d is debug
 # --host-interface is the master interface, eth0, eth1 etc. The docker network create needs to correspond to that subnet for bridge mode
