@@ -8,9 +8,9 @@ hang tight for trunks.
 
 Macvlan is a lightweight bridgless implementation that can be ideal for some scenarios that fit simple network needs with vlans and 802.1q trunks.
 
-### Pre-Requisites
+## Pre-Requisites
 
-#### Kernel Dependencies
+### Kernel Dependencies
 
 The kernel dependency is the macvlan kernel module support. You can verify if you have it compiled in or not with the following:
 
@@ -33,7 +33,7 @@ As of Docker v1.9 the docker/libnetwork APIs are packaged by default in Docker. 
 binary from Docker](http://docs.docker.com/engine/installation/binaries/). Alternatively `curl -sSL https://get.docker.com/ | sh` or from your
 distribution repo or docker repos.
 
-### Macvlan Bridge Mode Instructions
+## Macvlan Bridge Mode Instructions
 
 This example is also available in a [screencast on youtube](https://www.youtube.com/watch?v=IMOelqPzFtk).
 
@@ -51,21 +51,22 @@ $ docker daemon -D
 
 **2.**  Start the driver in bridge mode.
 
-- *Note:* The host-interface flag is the Docker host's eth interface. It shouldnt be required for the driver but this is a bit lazy and isnt
-honoring docker network opts yet.
-
-In the repo directory, use the binary named `macvlan-docker-plugin-0.3-Linux-x86_64`. Feel free to rename it :)
-
-**Note**: There is no need to add any paramters to the plugin daemon (other then `-d` debug for example). All options are passed via native Docker commands.
-
+Either using Docker:
 ```
-$ git clone https://github.com/gopher-net/macvlan-docker-plugin.git
-$ cd macvlan-docker-plugin/binaries
-$ ./macvlan-docker-plugin-0.3-Linux-x86_64 -d
-
-# -d is debug
-# --host-interface is the master interface, eth0, eth1 etc. The docker network create needs to correspond to that subnet for bridge mode
+$ docker run -d --privileged --net host \
+    -v /usr/share/docker/plugins/macvlan.sock:/usr/share/docker/plugins/macvlan.sock \
+    -v /var/run/docker.sock:/var/run/docker.sock \
+    gophernet/macvlan-plugin
 ```
+
+Or using docker-compose:
+```
+$ git clone github.com/gopher-net/macvlan-docker-plugin
+$ vi docker-compose.yml
+$ docker-compose up -d
+```
+
+To enable debugging, add ` -d` to the docker run command or add `command: -d` to `docker-compose.yml`
 
 **3.** Create a network with Docker
 
