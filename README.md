@@ -1,7 +1,8 @@
-macvlan-docker-plugin
+macvlan-docker-plugin (deprecated and moved upstream)
 =================
 
-**Update:** We are working on getting both the MacVlan and IpVlan drivers out of incubation from GopherNet, to upstream Docker Libnetwork natively. Thanks to those who helped with vetting how MacVlan and IpVlan interact with containers, its much appreciated. The notes, PR, early IT tests can be found at: [Macvlan, Ipvlan and 802.1q Trunk Driver Notes](https://gist.github.com/nerdalert/c0363c15d20986633fda). We will leave the drivers up and not deprecate them so that folks can have some example drivers to continue innovating with new network technologies.
+**UPDATE:** Both Ipvlan and Macvlan are now upstream and currently experimental. Give them a try and please don't hesitate to give us feedback in [libnetwork](https://github.com/docker/libnetwork/issues) issues. [Macvlan and Ipvlan Network Drivers](https://github.com/docker/docker/blob/master/experimental/vlan-networks.md). Thanks gohper-netters!
+
 
 Macvlan is a lightweight bridgless implementation that can be ideal for some scenarios that fit simple network needs with vlans and 802.1q trunks.
 
