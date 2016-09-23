@@ -6,6 +6,7 @@ import (
 
 	"net"
 
+        log "github.com/Sirupsen/logrus"
 	"github.com/Sirupsen/logrus"
 	"github.com/docker/libnetwork/types"
 )
@@ -85,6 +86,9 @@ func (d *Driver) network(nid string) *network {
 }
 
 func (d *Driver) addNetwork(n *network) {
+// mcc 
+        log.Debugf("addNetwork Called: [ %+v ]", n)
+// mcc
 	d.Lock()
 	d.networks[n.id] = n
 	d.Unlock()
