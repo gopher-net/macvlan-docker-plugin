@@ -73,6 +73,7 @@ func (d *Driver) CreateNetwork(r *sdk.CreateNetworkRequest) error {
 	var err error
 	log.Debugf("Network Create Called: [ %+v ]", r)
 	for _, v4 := range r.IPv4Data {
+		log.Debugf("IPv4Datat: %+v", v4)
 		netGw = v4.Gateway
 		_, netCidr, err = net.ParseCIDR(v4.Pool)
 		if err != nil {
@@ -89,7 +90,7 @@ func (d *Driver) CreateNetwork(r *sdk.CreateNetworkRequest) error {
 
 	// Parse docker network -o opts
 	for k, v := range r.Options {
-		if k == "com.docker.sdk.generic" {
+		if k == "com.docker.network.generic" {
 			if genericOpts, ok := v.(map[string]interface{}); ok {
 				for key, val := range genericOpts {
 					log.Debugf("Libnetwork Opts Sent: [ %s ] Value: [ %s ]", key, val)
@@ -115,7 +116,7 @@ func (d *Driver) DeleteNetwork(r *sdk.DeleteNetworkRequest) error {
 // CreateEndpoint creates a new MACVLAN Endpoint
 func (d *Driver) CreateEndpoint(r *sdk.CreateEndpointRequest) (*sdk.CreateEndpointResponse, error) {
 	endID := r.EndpointID
-	log.Debugf("The container subnet for this context is [ %s ]", r.Interface.Address)
+	log.Debugf("The container interface for this context is [ %+v ]", *r.Interface)
 	// Request an IP address from libnetwork based on the cidr scope
 	// TODO: Add a user defined static ip addr option in Docker v1.10
 	containerAddress := r.Interface.Address
@@ -130,7 +131,6 @@ func (d *Driver) CreateEndpoint(r *sdk.CreateEndpointRequest) (*sdk.CreateEndpoi
 
 	res := &sdk.CreateEndpointResponse{
 		Interface: &sdk.EndpointInterface{
-			Address:    containerAddress,
 			MacAddress: mac,
 		},
 	}
@@ -173,7 +173,7 @@ func (d *Driver) EndpointInfo(r *sdk.InfoRequest) (*sdk.InfoResponse, error) {
 
 // Join creates a MACVLAN interface to be moved to the container netns
 func (d *Driver) Join(r *sdk.JoinRequest) (*sdk.JoinResponse, error) {
-	log.Debugf("Join request: %+v", &r)
+	log.Debugf("Join request: %+v", r)
 	getID, err := d.getNetwork(r.NetworkID)
 	if err != nil {
 		// Init any existing libnetwork networks
@@ -229,7 +229,6 @@ func (d *Driver) Join(r *sdk.JoinRequest) (*sdk.JoinResponse, error) {
 
 	res := &sdk.JoinResponse{
 		InterfaceName:         *ifname,
-		Gateway:               getID.gateway,
 		DisableGatewayService: true,
 	}
 	log.Debugf("Join response: %+v", res)
